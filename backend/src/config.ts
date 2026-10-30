@@ -1,0 +1,15 @@
+export const config = {
+  port: Number(process.env.PORT ?? 8080),
+  rtlTcpHost: process.env.RTL_TCP_HOST ?? "host.docker.internal",
+  rtlTcpPort: Number(process.env.RTL_TCP_PORT ?? 1234),
+  frontendDist: process.env.FRONTEND_DIST ?? new URL("../../frontend/dist", import.meta.url).pathname,
+  defaultSampleRate: Number(process.env.DEFAULT_SAMPLE_RATE ?? 2_400_000),
+  fftSize: 8192,
+  bandSettleMs: Number(process.env.BAND_SETTLE_MS ?? 150),
+  scanSettleMs: Number(process.env.SCAN_SETTLE_MS ?? 150),
+  agentUrl: process.env.RTL_AGENT_URL ?? "http://host.docker.internal:5055",
+  agentTokenFile: process.env.RTL_AGENT_TOKEN_FILE ?? "",
+  noDataTimeoutMs: Number(process.env.RTL_NO_DATA_TIMEOUT_MS ?? 5000),
+  spectrumFps: 12,
+  audioSampleRate: 48_000,
+};
