@@ -20,6 +20,11 @@ function chunkMedian(spectrum: Float32Array): number {
   return vals.length ? vals[Math.floor(vals.length / 2)] : -100;
 }
 
+export interface BandSweepOptions {
+  settleMs?: number;
+  frames?: number;
+}
+
 export interface DeviceStatus {
   connected: boolean;
   tunerName: string;
@@ -258,12 +263,14 @@ export class DeviceManager {
     this.scanCancelled = true;
   }
 
-  async startBandSweep(startHz: number, stopHz: number): Promise<void> {
+  async startBandSweep(startHz: number, stopHz: number, options: BandSweepOptions = {}): Promise<void> {
     if (this.scanRunning) throw new Error("Scan already running");
     if (this.bandLoopPromise) {
       this.bandCancel = true;
       await this.bandLoopPromise.catch(() => {});
     }
+    const settleMs = Math.min(1000, Math.max(10, Math.round(options.settleMs ?? config.bandSettleMs)));
+    const frames = Math.min(8, Math.max(1, Math.round(options.frames ?? BAND_FRAMES)));
     this.bandSweeping = true;
     this.bandCancel = false;
     this.scanMode = true;
@@ -291,10 +298,22 @@ export class DeviceManager {
       stop: stopHz,
       binWidth,
       binCount,
+      settleMs,
+      frames,
     });
     this.broadcastStatus();
 
-    this.bandLoopPromise = this.runBandLoop(centers, binCount, fftSize, binWidth, half, startHz, stopHz);
+    this.bandLoopPromise = this.runBandLoop(
+      centers,
+      binCount,
+      fftSize,
+      binWidth,
+      half,
+      startHz,
+      stopHz,
+      settleMs,
+      frames,
+    );
     this.bandLoopPromise.catch(() => {});
   }
 
@@ -306,6 +325,8 @@ export class DeviceManager {
     half: number,
     startHz: number,
     stopHz: number,
+    settleMs: number,
+    frames: number,
   ): Promise<void> {
     const band = new Float32Array(binCount).fill(-140);
     const stepBins = centers.length > 1 ? Math.round((centers[1] - centers[0]) / binWidth) : 0;
@@ -318,8 +339,8 @@ export class DeviceManager {
           if (this.bandCancel) break;
           this.client.setFrequency(Math.round(c));
           this.clearQueue();
-          await sleep(config.bandSettleMs);
-          const { spectrum } = await this.collectSpectrum(BAND_FRAMES, true);
+          await sleep(settleMs);
+          const { spectrum } = await this.collectSpectrum(frames, true);
           const base = Math.round((c - half - startHz) / binWidth);
           // вырезаем DC-спайк в центре перестройки
           const dcIdx = fftSize >> 1;

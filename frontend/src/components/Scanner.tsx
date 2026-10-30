@@ -1,19 +1,21 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { client, type ScanHit } from "../lib/wsClient";
-import { BANDS, fmtKHz, fmtMHz } from "../lib/bands";
+import { fmtKHz, fmtMHz, type BandPreset } from "../lib/bands";
 
 interface Props {
+  band: BandPreset;
   onHit: (freq: number) => void;
   onFinished?: () => void;
 }
 
-export function Scanner({ onHit, onFinished }: Props) {
-  const [band, setBand] = useState(BANDS[0]);
+export function Scanner({ band, onHit, onFinished }: Props) {
   const [sensitivity, setSensitivity] = useState(4);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ index: 0, total: 0 });
   const [results, setResults] = useState<ScanHit[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const onFinishedRef = useRef(onFinished);
+  onFinishedRef.current = onFinished;
 
   useEffect(() => {
     const u1 = client.onScanProgress((p) => {
@@ -24,7 +26,7 @@ export function Scanner({ onHit, onFinished }: Props) {
       setResults(r);
       setRunning(false);
       setError(null);
-      onFinished?.();
+      onFinishedRef.current?.();
     });
     return () => {
       u1();
@@ -49,21 +51,13 @@ export function Scanner({ onHit, onFinished }: Props) {
   const cancel = async () => {
     await client.cancelScan();
     setRunning(false);
-    onFinished?.();
+    onFinishedRef.current?.();
   };
 
   return (
     <div className="scanner">
       <h3>Сканер частот</h3>
-      <div className="row">
-        <select value={band.name} onChange={(e) => setBand(BANDS.find((b) => b.name === e.target.value)!)}>
-          {BANDS.map((b) => (
-            <option key={b.name} value={b.name}>
-              {b.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <div className="sens-hint">Диапазон: {band.name}</div>
       <div className="row">
         <label>
           Чувствительность: <b>{sensitivity}/10</b>

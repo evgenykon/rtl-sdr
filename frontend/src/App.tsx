@@ -3,7 +3,10 @@ import { client, type ServerStatus } from "./lib/wsClient";
 import { BANDS, type BandPreset } from "./lib/bands";
 import { BandView } from "./components/BandView";
 import { Scanner } from "./components/Scanner";
+import { AudioPanel } from "./components/AudioPanel";
 import { fmtMHz } from "./lib/bands";
+import { sweepOptions } from "./lib/sweep";
+import { AudioEngine, DEFAULT_AUDIO_SETTINGS, EQ_FREQS, type AudioSettings } from "./lib/audioEngine";
 
 export default function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -11,10 +14,31 @@ export default function App() {
   const [streamFps, setStreamFps] = useState(0);
   const [band, setBand] = useState<BandPreset>(BANDS[0]);
   const [cursorFreq, setCursorFreq] = useState<number | null>(null);
+  const [eq, setEq] = useState<number[]>(() => [...DEFAULT_AUDIO_SETTINGS.eq]);
+  const [denoise, setDenoise] = useState(DEFAULT_AUDIO_SETTINGS.denoise);
+  const [denoiseAmount, setDenoiseAmount] = useState(DEFAULT_AUDIO_SETTINGS.denoiseAmount);
+  const [limiter, setLimiter] = useState(DEFAULT_AUDIO_SETTINGS.limiter);
+  const [limiterThreshold, setLimiterThreshold] = useState(DEFAULT_AUDIO_SETTINGS.limiterThreshold);
   const centerRef = useRef(100_000_000);
   const sampleRateRef = useRef(2_400_000);
   const listeningRef = useRef(false);
-  const audioRef = useRef<{ ctx: AudioContext | null; next: number }>({ ctx: null, next: 0 });
+  const audioEngineRef = useRef<AudioEngine | null>(null);
+  const audioSettingsRef = useRef<AudioSettings>({
+    eq: [...DEFAULT_AUDIO_SETTINGS.eq],
+    denoise: DEFAULT_AUDIO_SETTINGS.denoise,
+    denoiseAmount: DEFAULT_AUDIO_SETTINGS.denoiseAmount,
+    limiter: DEFAULT_AUDIO_SETTINGS.limiter,
+    limiterThreshold: DEFAULT_AUDIO_SETTINGS.limiterThreshold,
+  });
+
+  const ensureAudio = () => {
+    if (!audioEngineRef.current) {
+      audioEngineRef.current = new AudioEngine(audioSettingsRef.current);
+      audioEngineRef.current.init();
+    }
+    audioEngineRef.current.resume();
+    return audioEngineRef.current;
+  };
 
   useEffect(() => {
     client.connect();
@@ -38,19 +62,7 @@ export default function App() {
     const u4 = client.onBandFrame(() => frameCount++);
     const u5 = client.onAudio((data) => {
       if (!listeningRef.current) return;
-      const st = audioRef.current;
-      if (!st.ctx) st.ctx = new AudioContext({ sampleRate: 48000 });
-      const ctx = st.ctx;
-      if (ctx.state === "suspended") void ctx.resume();
-      const buf = ctx.createBuffer(1, data.length, 48000);
-      buf.copyToChannel(data, 0);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      const now = ctx.currentTime;
-      if (st.next < now + 0.02) st.next = now + 0.05;
-      src.start(st.next);
-      st.next += buf.duration;
+      ensureAudio().push(data);
     });
     return () => {
       clearInterval(fpsTimer);
@@ -59,8 +71,50 @@ export default function App() {
       u3();
       u4();
       u5();
+      audioEngineRef.current?.dispose();
+      audioEngineRef.current = null;
     };
   }, []);
+
+  const handleEq = (index: number, gain: number) => {
+    setEq((prev) => {
+      const next = prev.map((g, i) => (i === index ? gain : g));
+      audioSettingsRef.current = { ...audioSettingsRef.current, eq: next };
+      audioEngineRef.current?.setEq(next);
+      return next;
+    });
+  };
+
+  const handleEqReset = () => {
+    const next = EQ_FREQS.map(() => 0);
+    setEq(next);
+    audioSettingsRef.current = { ...audioSettingsRef.current, eq: next };
+    audioEngineRef.current?.setEq(next);
+  };
+
+  const handleDenoise = (on: boolean) => {
+    setDenoise(on);
+    audioSettingsRef.current = { ...audioSettingsRef.current, denoise: on };
+    audioEngineRef.current?.setDenoise(on, audioSettingsRef.current.denoiseAmount);
+  };
+
+  const handleDenoiseAmount = (amount: number) => {
+    setDenoiseAmount(amount);
+    audioSettingsRef.current = { ...audioSettingsRef.current, denoiseAmount: amount };
+    audioEngineRef.current?.setDenoise(audioSettingsRef.current.denoise, amount);
+  };
+
+  const handleLimiter = (on: boolean) => {
+    setLimiter(on);
+    audioSettingsRef.current = { ...audioSettingsRef.current, limiter: on };
+    audioEngineRef.current?.setLimiter(on, audioSettingsRef.current.limiterThreshold);
+  };
+
+  const handleLimiterThreshold = (db: number) => {
+    setLimiterThreshold(db);
+    audioSettingsRef.current = { ...audioSettingsRef.current, limiterThreshold: db };
+    audioEngineRef.current?.setLimiter(audioSettingsRef.current.limiter, db);
+  };
 
   const apply = async (p: Promise<ServerStatus>) => {
     try {
@@ -69,6 +123,12 @@ export default function App() {
       /* backend not reachable */
     }
   };
+
+  // режим демодуляции всегда следует за выбранным диапазоном
+  useEffect(() => {
+    apply(client.setMode(band.mode));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [band]);
 
   const tune = (f: number) => {
     centerRef.current = f;
@@ -88,19 +148,19 @@ export default function App() {
     }
     setBand(b);
     setCursorFreq(null);
-    apply(client.setMode(b.mode));
   };
 
   const handleListen = (on: boolean) => {
     listeningRef.current = on;
     apply(client.setListen(on));
     if (on) {
+      ensureAudio();
       void client.stopBand();
       const target = cursorFreq ?? Math.round((band.start + band.stop) / 2);
       tune(target);
       if (cursorFreq == null) setCursorFreq(target);
     } else {
-      void client.startBand(band.start, band.stop);
+      void client.startBand(band.start, band.stop, sweepOptions());
     }
   };
 
@@ -126,11 +186,6 @@ export default function App() {
 
       <main>
         <div className="left">
-          <div className="hint">
-            Клик по водопаду — только ставит курсор (приём не трогаем). «Слушать» — настройка на курсор и звук;
-            свип полосы встаёт на паузу (один приёмник), водопад остаётся как есть. Во время прослушивания
-            клик перестраивает приём.
-          </div>
           <BandView
             status={status}
             band={band}
@@ -139,17 +194,51 @@ export default function App() {
             onCursor={handleCursor}
             listening={status?.listening ?? false}
             onListen={handleListen}
-            onMode={(m) => apply(client.setMode(m))}
-            onAgc={(on) => apply(client.tune({ agc: on, gainMode: on ? 0 : 1 }))}
-            onGain={(g) => apply(client.tune({ gain: g, gainMode: 1, agc: false }))}
           />
         </div>
         <aside>
           <Scanner
+            band={band}
             onHit={handleCursor}
             onFinished={() => {
-              if (!listeningRef.current) void client.startBand(band.start, band.stop);
+              if (!listeningRef.current) void client.startBand(band.start, band.stop, sweepOptions());
             }}
+          />
+          <div className="receiver-panel">
+            <div className="audio-title">Приём · усиление</div>
+            <div className="receiver-row">
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={status?.agc ?? true}
+                  onChange={(e) => apply(client.tune({ agc: e.target.checked, gainMode: e.target.checked ? 0 : 1 }))}
+                />
+                AGC
+              </label>
+              <span>{((status?.gain ?? 0) / 10).toFixed(1)} dB</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={496}
+              step={1}
+              value={status?.gain ?? 0}
+              disabled={status?.agc ?? true}
+              onChange={(e) => apply(client.tune({ gain: Number(e.target.value), gainMode: 1, agc: false }))}
+            />
+          </div>
+          <AudioPanel
+            eq={eq}
+            denoise={denoise}
+            denoiseAmount={denoiseAmount}
+            limiter={limiter}
+            limiterThreshold={limiterThreshold}
+            onEq={handleEq}
+            onDenoise={handleDenoise}
+            onDenoiseAmount={handleDenoiseAmount}
+            onLimiter={handleLimiter}
+            onLimiterThreshold={handleLimiterThreshold}
+            onEqReset={handleEqReset}
           />
         </aside>
       </main>

@@ -25,6 +25,13 @@ interface ScanBody {
   minSnr?: number;
 }
 
+interface BandBody {
+  start: number;
+  stop: number;
+  settleMs?: number;
+  frames?: number;
+}
+
 export function registerRoutes(app: FastifyInstance, manager: DeviceManager): void {
   app.get("/api/device", async () => manager.getStatus());
 
@@ -72,11 +79,11 @@ export function registerRoutes(app: FastifyInstance, manager: DeviceManager): vo
   app.get("/api/scan", async () => manager.getLastScan());
 
   app.post("/api/band", async (req, reply) => {
-    const body = req.body as ScanBody;
+    const body = req.body as BandBody;
     if (typeof body.start !== "number" || typeof body.stop !== "number") {
       return reply.code(400).send({ error: "start and stop required" });
     }
-    manager.startBandSweep(body.start, body.stop).catch((e: Error) => {
+    manager.startBandSweep(body.start, body.stop, { settleMs: body.settleMs, frames: body.frames }).catch((e: Error) => {
       manager.broadcastError(e.message);
     });
     return { ok: true };

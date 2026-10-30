@@ -157,8 +157,12 @@ export class SdrClient {
     return this.api("/api/scan/cancel", {});
   }
 
-  async startBand(start: number, stop: number): Promise<unknown> {
-    return this.api("/api/band", { start, stop });
+  async startBand(
+    start: number,
+    stop: number,
+    options?: { settleMs?: number; frames?: number },
+  ): Promise<unknown> {
+    return this.api("/api/band", { start, stop, ...options });
   }
 
   async stopBand(): Promise<unknown> {

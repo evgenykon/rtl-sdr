@@ -146,6 +146,18 @@ header h1 {
   font-size: 12px;
 }
 
+.sweep-speed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #8b949e;
+  font-size: 12px;
+}
+
+.sweep-speed select {
+  padding: 3px 6px;
+}
+
 main {
   flex: 1;
   display: flex;
@@ -245,6 +257,14 @@ button.primary {
 }
 
 button.listen {
+  margin-left: auto;
+  width: 46px;
+  height: 42px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
   background: #238636;
   border-color: #238636;
 }
@@ -252,6 +272,12 @@ button.listen {
 button.listen.stop {
   background: #da3633;
   border-color: #da3633;
+}
+
+button.listen svg {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
 }
 
 .chk {
@@ -378,6 +404,97 @@ table.hits tbody tr:hover {
   width: 100%;
   height: 90px;
   display: block;
+}
+
+.receiver-panel {
+  border-top: 1px solid #21262d;
+  margin-top: 16px;
+  padding: 10px 0 0;
+}
+
+.receiver-panel input[type="range"] {
+  width: 100%;
+}
+
+.receiver-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.audio-panel {
+  border-top: 1px solid #21262d;
+  margin-top: 16px;
+  padding: 10px 0 0;
+}
+
+.audio-title {
+  font-size: 11px;
+  color: #8b949e;
+  margin-bottom: 8px;
+}
+
+.eq {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 0 2px;
+}
+
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 44px;
+  font-size: 10px;
+  color: #8b949e;
+}
+
+.eq-band input[type="range"] {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 22px;
+  height: 96px;
+  margin: 0;
+  padding: 0;
+}
+
+.eq-band em {
+  font-style: normal;
+  color: #c9d1d9;
+  font-size: 10px;
+  min-height: 12px;
+}
+
+.eq-reset {
+  margin-top: 8px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.denoise {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.denoise input[type="range"] {
+  width: 110px;
+}
+
+.denoise span {
+  color: #c9d1d9;
+  font-size: 11px;
+  min-width: 38px;
 }
 
 .wf-error {

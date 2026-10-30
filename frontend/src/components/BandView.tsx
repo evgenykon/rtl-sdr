@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { client, type BandMeta, type ServerStatus } from "../lib/wsClient";
 import { BANDS, fmtMHz, type BandPreset } from "../lib/bands";
+import {
+  SWEEP_PRESETS,
+  loadSweepPreset,
+  saveSweepPreset,
+  sweepOptions,
+  type SweepPresetId,
+} from "../lib/sweep";
 
 interface Props {
   status: ServerStatus | null;
@@ -10,15 +17,11 @@ interface Props {
   onCursor: (freq: number) => void;
   listening: boolean;
   onListen: (on: boolean) => void;
-  onMode: (m: string) => void;
-  onAgc: (on: boolean) => void;
-  onGain: (g: number) => void;
 }
 
 const DB_MIN = -110;
 const DB_MAX = -10;
 const BG = "#0d1117";
-const TARGET_PX_PER_SEC = 20;
 const MIN_SPAN = 100e3;
 const ZOOM_FACTOR = 1.4;
 
@@ -62,29 +65,35 @@ export function BandView({
   onCursor,
   listening,
   onListen,
-  onMode,
-  onAgc,
-  onGain,
 }: Props) {
   const [view, setView] = useState<ViewRange>({ start: band.start, stop: band.stop });
   const [sweeping, setSweeping] = useState(true);
   const [hasData, setHasData] = useState(false);
   const [passMs, setPassMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [sweepPreset, setSweepPreset] = useState<SweepPresetId>(loadSweepPreset);
   const hasDataRef = useRef(false);
   const wfRef = useRef<HTMLCanvasElement>(null);
   const ovRef = useRef<HTMLCanvasElement>(null);
   const metaRef = useRef<BandMeta | null>(null);
   const frameRef = useRef<Float32Array<ArrayBuffer> | null>(null);
-  const prevFrameRef = useRef<Float32Array<ArrayBuffer> | null>(null);
   const needsFillRef = useRef(true);
   const viewRef = useRef<ViewRange>(view);
   const cursorRef = useRef<number | null>(cursorFreq);
   const bandRef = useRef<BandPreset>(band);
   const listeningRef = useRef(listening);
+  const sweepPresetRef = useRef<SweepPresetId>(sweepPreset);
   const lastRowAtRef = useRef(0);
   const passMsRef = useRef(300);
   const colorRangeRef = useRef({ lo: -90, hi: -40 });
+  const animRef = useRef<{
+    from: Float32Array;
+    to: Float32Array;
+    start: number;
+    duration: number;
+  } | null>(null);
+  const lastDrawnRef = useRef<Float32Array | null>(null);
+  const rowImgRef = useRef<ImageData | null>(null);
   const levelRef = useRef<HTMLCanvasElement>(null);
   const levelBufRef = useRef<number[]>([]);
   const scanHitsRef = useRef<number[]>([]);
@@ -227,10 +236,9 @@ export function BandView({
       cr.hi = cr.hi * 0.5 + hi * 0.5;
     }
 
-    const writeRow = (a: Float32Array, b: Float32Array, t: number, pix: Uint8ClampedArray, offset: number) => {
+    const mapRow = (row: Float32Array, pix: Uint8ClampedArray, offset: number) => {
       for (let x = 0; x < w; x++) {
-        const val = a[x] * (1 - t) + b[x] * t;
-        const c = Math.floor(clamp01((val - cr.lo) / Math.max(1, cr.hi - cr.lo)) * 255) * 4;
+        const c = Math.floor(clamp01((row[x] - cr.lo) / Math.max(1, cr.hi - cr.lo)) * 255) * 4;
         const o = offset + x * 4;
         pix[o] = LUT[c];
         pix[o + 1] = LUT[c + 1];
@@ -243,36 +251,72 @@ export function BandView({
     // (иначе в начале получается «лесенка» из ещё не просканированных кусков)
     if (needsFillRef.current && m.complete) {
       const row = new ImageData(w, 1);
-      writeRow(rowCurrent, rowCurrent, 0, row.data, 0);
+      mapRow(rowCurrent, row.data, 0);
       const off = document.createElement("canvas");
       off.width = w;
       off.height = 1;
       off.getContext("2d")!.putImageData(row, 0, 0);
       ctx.drawImage(off, 0, 0, w, h);
       needsFillRef.current = false;
-      prevFrameRef.current = d;
       lastRowAtRef.current = performance.now();
+      lastDrawnRef.current = rowCurrent;
+      animRef.current = null;
       return;
     }
 
-    // плавная прокрутка: интерполируем между прошлым и текущим кадром
+    // новый кадр: запоминаем цель, а прокрутку делает фоновый тикер,
+    // чтобы водопад двигался плавно даже при редких кадрах свипа
     const now = performance.now();
     const pass = lastRowAtRef.current > 0 ? now - lastRowAtRef.current : passMsRef.current;
     lastRowAtRef.current = now;
     passMsRef.current = pass;
     setPassMs(Math.round(pass));
-    const k = Math.max(1, Math.min(48, Math.round((TARGET_PX_PER_SEC * pass) / 1000)));
-
-    const prev = prevFrameRef.current ?? d;
-    const rowPrev = prevFrameRef.current ? aggregate(prev) : rowCurrent;
-    const block = new ImageData(w, k);
-    for (let i = 0; i < k; i++) {
-      writeRow(rowPrev, rowCurrent, (i + 1) / k, block.data, i * w * 4);
-    }
-    ctx.drawImage(canvas, 0, -k);
-    ctx.putImageData(block, 0, h - k);
-    prevFrameRef.current = d;
+    animRef.current = {
+      from: lastDrawnRef.current ?? rowCurrent,
+      to: rowCurrent,
+      start: now,
+      duration: Math.max(60, Math.min(2000, pass)),
+    };
   };
+
+  const drawNextRow = () => {
+    const canvas = wfRef.current;
+    const anim = animRef.current;
+    if (!canvas || !anim) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const now = performance.now();
+    // данных давно нет (пауза свипа) — не гоним пустые строки
+    if (lastRowAtRef.current > 0 && now - lastRowAtRef.current > Math.max(2500, passMsRef.current * 3)) return;
+
+    const t = Math.min(1, (now - anim.start) / anim.duration);
+    const w = canvas.width;
+    const h = canvas.height;
+    const row = new Float32Array(w);
+    for (let x = 0; x < w; x++) row[x] = anim.from[x] * (1 - t) + anim.to[x] * t;
+    lastDrawnRef.current = row;
+
+    if (!rowImgRef.current || rowImgRef.current.width !== w) rowImgRef.current = new ImageData(w, 1);
+    const cr = colorRangeRef.current;
+    const pix = rowImgRef.current.data;
+    for (let x = 0; x < w; x++) {
+      const c = Math.floor(clamp01((row[x] - cr.lo) / Math.max(1, cr.hi - cr.lo)) * 255) * 4;
+      const o = x * 4;
+      pix[o] = LUT[c];
+      pix[o + 1] = LUT[c + 1];
+      pix[o + 2] = LUT[c + 2];
+      pix[o + 3] = 255;
+    }
+    ctx.drawImage(canvas, 0, -1);
+    ctx.putImageData(rowImgRef.current, 0, h - 1);
+  };
+
+  // тикер прокрутки водопада: 1 строка каждые 50 мс (~20 px/s)
+  useEffect(() => {
+    const timer = window.setInterval(drawNextRow, 50);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const drawOverlay = () => {
     const canvas = ovRef.current;
@@ -373,7 +417,8 @@ export function BandView({
     bandRef.current = band;
     metaRef.current = null;
     frameRef.current = null;
-    prevFrameRef.current = null;
+    animRef.current = null;
+    lastDrawnRef.current = null;
     needsFillRef.current = true;
     hasDataRef.current = false;
     setHasData(false);
@@ -459,7 +504,7 @@ export function BandView({
     const start = async () => {
       if (listeningRef.current) return;
       try {
-        await client.startBand(band.start, band.stop);
+        await client.startBand(band.start, band.stop, sweepOptions(sweepPresetRef.current));
       } catch {
         setSweeping(false);
       }
@@ -479,7 +524,8 @@ export function BandView({
   // изменение зума: перерисовываем подписи, старую картинку стираем
   useEffect(() => {
     viewRef.current = view;
-    prevFrameRef.current = null;
+    animRef.current = null;
+    lastDrawnRef.current = null;
     needsFillRef.current = true;
     lastRowAtRef.current = 0;
     clearWaterfall();
@@ -522,7 +568,9 @@ export function BandView({
   // устройство подключилось — если данных ещё нет, заново запускаем свип
   useEffect(() => {
     if (status?.connected && !listeningRef.current && !hasDataRef.current) {
-      void client.startBand(bandRef.current.start, bandRef.current.stop).catch(() => {});
+      void client
+        .startBand(bandRef.current.start, bandRef.current.stop, sweepOptions(sweepPresetRef.current))
+        .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.connected]);
@@ -532,6 +580,17 @@ export function BandView({
     const frac = clamp01((e.clientX - rect.left) / rect.width);
     const v = viewRef.current;
     onCursor(Math.round(v.start + frac * (v.stop - v.start)));
+  };
+
+  const handleSweepPreset = (id: SweepPresetId) => {
+    setSweepPreset(id);
+    sweepPresetRef.current = id;
+    saveSweepPreset(id);
+    if (listeningRef.current) return;
+    void (async () => {
+      await client.stopBand().catch(() => {});
+      await client.startBand(bandRef.current.start, bandRef.current.stop, sweepOptions(id)).catch(() => {});
+    })();
   };
 
   const fullSpan = band.stop - band.start;
@@ -558,28 +617,6 @@ export function BandView({
             </option>
           ))}
         </select>
-        <select value={status?.audioMode ?? "fm"} onChange={(e) => onMode(e.target.value)}>
-          <option value="fm">FM</option>
-          <option value="nfm">NFM</option>
-          <option value="am">AM</option>
-        </select>
-        <label className="chk">
-          <input type="checkbox" checked={status?.agc ?? true} onChange={(e) => onAgc(e.target.checked)} />
-          AGC
-        </label>
-        <div className="gain">
-          <label>Усиление</label>
-          <input
-            type="range"
-            min={0}
-            max={496}
-            step={1}
-            value={status?.gain ?? 0}
-            disabled={status?.agc ?? true}
-            onChange={(e) => onGain(Number(e.target.value))}
-          />
-          <span>{((status?.gain ?? 0) / 10).toFixed(1)} dB</span>
-        </div>
         <div className="zoom">
           <button title="Приблизить" onClick={() => zoomTo(cursorRef.current ?? (view.start + view.stop) / 2, 1 / ZOOM_FACTOR)}>
             +
@@ -594,6 +631,20 @@ export function BandView({
             Сброс
           </button>
         </div>
+        <label className="sweep-speed">
+          Свип
+          <select
+            value={sweepPreset}
+            onChange={(e) => handleSweepPreset(e.target.value as SweepPresetId)}
+            title="Скорость перестройки при свипе"
+          >
+            {SWEEP_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <span className="sweep-status">
           {listening
             ? "свип на паузе (прослушивание)"
@@ -601,8 +652,21 @@ export function BandView({
               ? `свип…${passMs ? ` ${(passMs / 1000).toFixed(1)} с/проход` : ""}`
               : "свип остановлен"}
         </span>
-        <button className={listening ? "listen stop" : "listen"} onClick={() => onListen(!listening)}>
-          {listening ? "■ Стоп" : "▶ Слушать"}
+        <button
+          className={listening ? "listen stop" : "listen"}
+          onClick={() => onListen(!listening)}
+          title={listening ? "Стоп" : "Слушать"}
+          aria-label={listening ? "Стоп" : "Слушать"}
+        >
+          {listening ? (
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="6" y="6" width="12" height="12" rx="1.5" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 5.2v13.6a1 1 0 0 0 1.53.85l10.5-6.8a1 1 0 0 0 0-1.7L9.53 4.35A1 1 0 0 0 8 5.2z" />
+            </svg>
+          )}
         </button>
       </div>
       <div className="freq-axis">
